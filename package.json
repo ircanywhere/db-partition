@@ -1,0 +1,26 @@
+{
+	"name": "db-partition",
+	"description": "DB Partitioner for IRCAnywhere",
+	"version": "0.0.1",
+	"author": "IRCAnywhere <support@ircanywhere.com>",
+	"private": true,
+	"main": "./src/start.js",
+	"contributors": [
+		{
+			"name": "Ricki Hastings",
+			"email": "ricki@ircanywhere.com"
+		}
+	],
+	"scripts": {
+		"start":  "./src/start.js"
+	},
+	"dependencies": {
+		"mongoose": "2.5.10"
+	},
+	"engines": {
+		"node": ">= 0.6.11"
+	},
+	"bundleDependencies": [
+		"mongoose"
+	]
+}
