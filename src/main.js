@@ -14,30 +14,15 @@
  * Rights to this code are as documented in LICENSE.
  */
 
-const clc = require('cli-color'),
-	  pjson = require('../package.json');
-
-/*
- * Partition
- *
- * A partition object containing everything
- */
-var Partition = {
-	config: require('../config.json'),
-	database: require('./database').database
-};
-
-/*
- * Partition::start
- *
- * This is the first place we go to after the database has connected
- */
-Partition.start = function()
-{
-	var _this = this;
-
-	util.log('hi');
-};
+const async = require('async'),
+	  pjson = require('../package.json'),
+	  clc = require('cli-color'),
+	  database = require('./database').database,
+	  dump = require('./dump').dump,
+	  util = require('util'),
+	  error = function(text) { util.log(clc.red(text)) },
+	  success = function(text) { util.log(clc.green(text)) },
+	  notice = function(text) { util.log(clc.yellow(text)) };
 
 /*
  * main
@@ -56,9 +41,14 @@ function main(args)
 	console.log('    v ' + pjson.version + ' Copyright (c) 2013 IRCAnywhere <support@ircanywhere.com>');
 	console.log(' ');
 
-	Partition.database.setup();
-	// this function sends us back to .start() once connected 
+	database.setup();
+	// make sure the database is set up and completely ready before we do anything else
+	
+	database.e.on('complete', function()
+	{
+		dump.setup();
+	});
+	// once the database has complete setting up, setup the file system
 }
 
-exports.partition = Partition;
 main(process.argv);

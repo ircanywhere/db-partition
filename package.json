@@ -4,7 +4,7 @@
 	"version": "0.0.1",
 	"author": "IRCAnywhere <support@ircanywhere.com>",
 	"private": true,
-	"main": "./src/start.js",
+	"main": "./src/main.js",
 	"contributors": [
 		{
 			"name": "Ricki Hastings",
@@ -12,9 +12,10 @@
 		}
 	],
 	"scripts": {
-		"start":  "./src/start.js"
+		"start":  "./src/main.js"
 	},
 	"dependencies": {
+		"async": "*",
 		"mongoose": "3.5.4",
 		"cli-color": "0.2.1"
 	},

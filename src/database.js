@@ -14,7 +14,10 @@
  * Rights to this code are as documented in LICENSE.
  */
 
-const clc = require('cli-color'),
+var EventEmitter = require('events').EventEmitter;
+
+const async = require('async'),
+	  clc = require('cli-color'),
 	  util = require('util'),
 	  error = function(text) { util.log(clc.red(text)) },
 	  success = function(text) { util.log(clc.green(text)) },
@@ -27,8 +30,7 @@ const clc = require('cli-color'),
  */
 var Database = {
 	config: require('../config.json'),
-	mongoose: require('mongoose'),
-	partition: require('./start.js')
+	mongoose: require('mongoose')
 };
 
 /*
@@ -38,92 +40,107 @@ var Database = {
  */
 Database.setup = function()
 {
-	var _this = this;
-
-	var databaseUrl = _this.config.url,
+	var _this = this,
+		ObjectId = _this.mongoose.Schema.ObjectId,
+		databaseUrl = _this.config.url,
 		database = _this.config.database,
 		collection = _this.config.collection || 'buffers',
 		metaCollection = _this.config.metaCollection || 'buffersMeta';
-		// default to 'idents'
+
+	_this.e = new EventEmitter();
+	// create an event emitter
 
 	if (databaseUrl == undefined)
-	{
 		error('You have not provided a url or database to connect to');
-		process.exit(1);
-	}
 	// no mongodb url, bail
 
 	_this.conn = _this.mongoose.createConnection(databaseUrl + '/' + database, {db: {native_parser: true}});
 
-	_this.conn.on('error', function(err)
-	{
+	_this.conn.on('error', function(err) {
 		error(err);
-		process.exit(1);
 	});
 	// couldn't connect
 
 	_this.conn.on('open', function()
 	{
-		success('Sucessfully connected to the mongodb database');
-		notice('Checking if collections exist...');
+		async.series([
+			function (callback)
+			{
+				success('Sucessfully connected to the mongodb database');
+				notice('Checking if collections exist...');
 
-		_this.conn.db.collectionNames(function(err, collections)
-		{
-			var partitionCollection = database + '.' + collection,
-				metaDataCollection = database + '.' + metaCollection,
-				pExists = false,
-				mdExists = false;
-			
-			for (var cid in collections)
-			{
-				var coll = collections[cid];
+				_this.conn.db.collectionNames(function(err, collections)
+				{
+					var partitionCollection = database + '.' + collection,
+						metaDataCollection = database + '.' + metaCollection,
+						pExists = false,
+						mdExists = false;
+					
+					for (var cid in collections)
+					{
+						var coll = collections[cid];
 
-				if (coll.name == partitionCollection)
-					pExists = true;
-				if (coll.name == metaDataCollection)
-					mdExists = true;
-			}
+						if (coll.name == partitionCollection)
+							pExists = true;
+						if (coll.name == metaDataCollection)
+							mdExists = true;
+					}
 
-			if (pExists)
-			{
-				success('Partition collection:   ' + partitionCollection + ' exists');
-			}
-			else
-			{
-				error('Partition collection:   ' + partitionCollection + ' doesn\'t exist, nothing to partition');
-				process.exit(1);
-			}
-			// check if our partition collection exists
+					if (pExists)
+						success('Partition collection:   ' + partitionCollection + ' exists');
+					else
+						error('Partition collection:   ' + partitionCollection + ' doesn\'t exist, nothing to partition');
+					// check if our partition collection exists
 
-			if (mdExists)
-			{
-				success('Metadata collection:    ' + metaDataCollection + ' exists');
-			}
-			else
-			{
-				notice('Metadata collection:    ' + metaDataCollection + ' doesn\'t exist, creating collection');
-				_this.conn.db.createCollection(metaDataCollection, {capped: false}, function(err, collection) {
-					success('Metadata collection:    successfully created ' + metaDataCollection);
+					if (mdExists)
+					{
+						success('Metadata collection:    ' + metaDataCollection + ' exists');
+					}
+					else
+					{
+						notice('Metadata collection:    ' + metaDataCollection + ' doesn\'t exist, creating collection');
+						_this.conn.db.createCollection(metaCollection, {capped: false}, function(err, collection) {
+							success('Metadata collection:    successfully created ' + metaDataCollection);
+							callback();
+						});
+					}	
+					// check if our metadata collection exists
+					// not fatal if it doesn't, we can just create it.
+
+					callback();
 				});
+				// check if our collection exists
+			},
+			function (callback)
+			{
+				var MetaDataModel = new _this.mongoose.Schema({
+					account: String,
+					network: ObjectId,
+					target: String,
+					timestamp: Number,
+					baseLocation: String,
+					location: String
+				});
+
+				_this.metaData = _this.mongoose.model(metaCollection, MetaDataModel);
+				// setup the schema
+
+				notice('Metadata collection:    setting up schema');
+				// setup our models and schemas here
+
+				callback();
+			},
+			function(callback)
+			{
+				_this.e.emit('complete');
+				// once all this is done emit the complete callback so we can continue
+
+				callback();
 			}
-			// check if our metadata collection exists
-			// not fatal if it doesn't, we can just create it.
-		});
-		// check if our collection exists
+		]);
+		// execute tasks in order
 	});
 	// connected, move on.
-
-		
-		
-		/*var IdentModel = new _this.mongoose.Schema({
-			localPort: Number,
-			remotePort: Number,
-			user: String
-		});
-
-		_this.identModel = _this.mongoose.model(collection, IdentModel);*/
-		// setup the schema
-	// connect to the database
 };
 
 exports.database = Database;

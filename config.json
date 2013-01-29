@@ -2,5 +2,12 @@
 	"url": "mongodb://localhost",
 	"database": "testbed",
 	"collection": "buffers",
-	"metaCollection": "buffersMeta"
+	"metaCollection": "buffersMeta",
+	"backupto": "fs",
+	"fs": {
+		"location": "~/shared/db-partition/data/"
+	},
+	"s3": {
+
+	}
 }
