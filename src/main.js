@@ -16,20 +16,22 @@
 
 const async = require('async'),
 	  pjson = require('../package.json'),
+	  config = require('../config.json'),
 	  clc = require('cli-color'),
 	  database = require('./database').database,
 	  dump = require('./dump').dump,
 	  util = require('util'),
-	  error = function(text) { util.log(clc.red(text)) },
+	  error = function(text) { util.log(clc.red(text)); process.exit(1) },
+	  warn = function(text) { util.log(clc.yellow(text)) };
 	  success = function(text) { util.log(clc.green(text)) },
-	  notice = function(text) { util.log(clc.yellow(text)) };
+	  notice = function(text) { util.log(clc.cyanBright(text)) };
 
 /*
  * main
  *
  * Like a C program, first thing that gets executed
  */
-function main(args)
+function main()
 {
 	console.log(' ');
 	console.log('      8 8                         w   w  w   w');
@@ -44,11 +46,39 @@ function main(args)
 	database.setup();
 	// make sure the database is set up and completely ready before we do anything else
 	
-	database.e.on('complete', function()
-	{
+	database.e.on('ready', function() {
 		dump.setup();
 	});
 	// once the database has complete setting up, setup the file system
-}
 
-main(process.argv);
+	dump.e.on('ready', function() {
+		database.analyse();
+	});
+	// dump system has completed setting up and ran tests
+
+	database.e.on('finished analysing', function()
+	{
+		if (process.argv.indexOf('--analyse') == -1)
+			database.partition();
+		else
+			process.exit(1);
+		// if --analyse isnt specified then go ahead and partition
+	});
+	// finished analysing
+
+	database.e.on('finished organising', function(fileStructure)
+	{
+		if (config.backupto == 'fs')
+			dump.save(fileStructure);
+	});
+	// finished organising
+
+	dump.e.on('finished', function()
+	{
+		database.conn.close();
+		process.exit(1);
+	});
+	// finished dumping
+};
+
+main();

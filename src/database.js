@@ -17,11 +17,13 @@
 var EventEmitter = require('events').EventEmitter;
 
 const async = require('async'),
+	  moment = require('moment'),
 	  clc = require('cli-color'),
 	  util = require('util'),
-	  error = function(text) { util.log(clc.red(text)) },
+	  error = function(text) { util.log(clc.red(text)); process.exit(1) },
+	  warn = function(text) { util.log(clc.yellow(text)) };
 	  success = function(text) { util.log(clc.green(text)) },
-	  notice = function(text) { util.log(clc.yellow(text)) };
+	  notice = function(text) { util.log(clc.cyanBright(text)) };
 
 /*
  * Database
@@ -30,13 +32,14 @@ const async = require('async'),
  */
 var Database = {
 	config: require('../config.json'),
-	mongoose: require('mongoose')
+	mongoose: require('mongoose'),
+	e: new EventEmitter()
 };
 
 /*
  * Database::setup
  *
- * Determine what backend we're using and how to deal with it
+ * Setup the database and perform some tests
  */
 Database.setup = function()
 {
@@ -47,14 +50,11 @@ Database.setup = function()
 		collection = _this.config.collection || 'buffers',
 		metaCollection = _this.config.metaCollection || 'buffersMeta';
 
-	_this.e = new EventEmitter();
-	// create an event emitter
-
 	if (databaseUrl == undefined)
 		error('You have not provided a url or database to connect to');
 	// no mongodb url, bail
 
-	_this.conn = _this.mongoose.createConnection(databaseUrl + '/' + database, {db: {native_parser: true}});
+	_this.conn = _this.mongoose.createConnection(databaseUrl + '/' + database);
 
 	_this.conn.on('error', function(err) {
 		error(err);
@@ -99,7 +99,7 @@ Database.setup = function()
 					else
 					{
 						notice('Metadata collection:    ' + metaDataCollection + ' doesn\'t exist, creating collection');
-						_this.conn.db.createCollection(metaCollection, {capped: false}, function(err, collection) {
+						_this.conn.db.createCollection(metaCollection, {capped: false}, function(err, coll) {
 							success('Metadata collection:    successfully created ' + metaDataCollection);
 							callback();
 						});
@@ -113,6 +113,19 @@ Database.setup = function()
 			},
 			function (callback)
 			{
+				var PartitionModel = new _this.mongoose.Schema({
+					account: String,
+					network: ObjectId,
+					timestamp: Number,
+					read: Boolean,
+					nick: String,
+					target: String,
+					self: Boolean,
+					status: Boolean,
+					privmsg: Boolean,
+					json: {}
+				});
+
 				var MetaDataModel = new _this.mongoose.Schema({
 					account: String,
 					network: ObjectId,
@@ -122,9 +135,11 @@ Database.setup = function()
 					location: String
 				});
 
-				_this.metaData = _this.mongoose.model(metaCollection, MetaDataModel);
+				_this.partitionData = _this.conn.model(collection, PartitionModel);
+				_this.metaData = _this.conn.model(metaCollection, MetaDataModel);
 				// setup the schema
 
+				notice('Partition collection:   setting up schema');
 				notice('Metadata collection:    setting up schema');
 				// setup our models and schemas here
 
@@ -132,15 +147,140 @@ Database.setup = function()
 			},
 			function(callback)
 			{
-				_this.e.emit('complete');
+				_this.e.emit('ready');
 				// once all this is done emit the complete callback so we can continue
-
-				callback();
 			}
 		]);
 		// execute tasks in order
 	});
 	// connected, move on.
+};
+
+/*
+ * Database::analyse
+ *
+ * Analyse our structure and determine how many results we've got etc
+ */
+Database.analyse = function()
+{
+	var _this = this,
+		days = _this.config.olderthan || 28;
+	// _this so we don't have to bind
+	// days defaults to 28 (4 week) if undefined
+
+	var from = moment().subtract('days', days).startOf('day');
+	// thank fuck for moment, probably cut 10 lines down to one piss easy call
+
+	_this.partitionQuery = {timestamp: {'$lt': Date.parse(from._d)	}};
+	// lets first setup the query that grabs the last x days worth of data
+
+	notice('Analysing data structures...');
+	
+	async.waterfall([
+		function (callback)
+		{
+			_this.partitionData.count(function(err, count)
+			{
+				notice(_this.partitionData.collection.name + ':   ' + count + ' documents found...');
+				callback(null, count);
+			});
+		},
+		function (count, callback)
+		{
+			_this.partitionData.count(_this.partitionQuery, function(err, pcount)
+			{
+				var percentage = pcount / count * 100; 
+				notice(_this.partitionData.collection.name + ':   ' + pcount + ' documents will be partitioned (' + percentage.toFixed(2) + '%)...');
+				callback(null, count, pcount);
+			});
+		},
+		function (count, pcount, callback)
+		{
+			_this.count = count;
+			_this.pcount = pcount;
+			_this.e.emit('finished analysing');
+			// once all this is done emit the complete callback so we can continue
+		}
+	]);
+	// loving async, execute these in a series, without embedding callbacks
+};
+
+/*
+ * Database::partition
+ *
+ * Start to "partition" our data, ie organising it into a structure
+ * and figure out where to dump it all etc.
+ */
+Database.partition = function()
+{
+	var _this = this,
+		fileStructure = {};
+
+	notice('Organising data ready for partitioning...');
+
+	async.waterfall([
+		function (callback)
+		{
+			var stream = _this.partitionData.find(_this.partitionQuery).sort({timestamp: 'asc'}).stream(),
+				tens = Math.round(_this.pcount / 10),
+				percent = 0,
+				c = 0,
+				i = 0;
+			// setup a stream and make some calculations
+
+			stream.on('data', function(record)
+			{
+				if (c == tens)
+				{
+					c = 0;
+					percent += 10;
+					notice(_this.partitionData.collection.name + ':   ... Organised ' + i + ' documents (' + percent + '%)');
+				}
+
+				if (fileStructure[record.account] == undefined)
+					fileStructure[record.account] = {};
+				// create the top level
+
+				if (fileStructure[record.account][record.network] == undefined)
+					fileStructure[record.account][record.network] = {};
+				// does the network exist
+
+				var day = moment.utc(record.timestamp).format('DD-MM-YYYY'),
+					target = (record.status) ? 'status' : record.target;
+
+				if (fileStructure[record.account][record.network][target] == undefined)
+					fileStructure[record.account][record.network][target] = [];
+				// target
+
+				if (fileStructure[record.account][record.network][target][day] == undefined)
+					fileStructure[record.account][record.network][target][day] = [];
+				// dates
+
+				fileStructure[record.account][record.network][target][day].push(record);
+				// push the record
+
+				i++;
+				c++;
+				// update counters
+			});
+
+			stream.on('close', function()
+			{
+				callback(null);
+				// do the writing outside of here
+			});
+		},
+		function (callback)
+		{
+			notice(_this.partitionData.collection.name + ':   ... Organised ' + _this.pcount + ' documents (100%)');
+			success('Successfully completed organising');
+			// once we've got to here we're safe in saying our data has been analysed
+
+			_this.e.emit('finished organising', fileStructure);
+			// emit an event so we can continue in another file
+		}
+	]);
+	// series our thingies so we know what we're doing.
 };
 
 exports.database = Database;
