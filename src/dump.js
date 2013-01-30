@@ -35,7 +35,8 @@ const async = require('async'),
  * An object containing the functions to dump data to a file system or S3
  */
 var Dump = {
-	config: require('../config.json'),
+	settings: require('../settings.js').settings,
+	config: require('../settings.js').config,
 	database: require('./database').database,
 	e: new EventEmitter()
 };

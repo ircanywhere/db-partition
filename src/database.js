@@ -32,7 +32,8 @@ const async = require('async'),
  * A database object which contains all settings and handles connections and lookups
  */
 var Database = {
-	config: require('../config.json'),
+	settings: require('../settings.js').settings,
+	config: require('../settings.js').config,
 	mongoose: require('mongoose'),
 	e: new EventEmitter()
 };
@@ -47,7 +48,6 @@ exports.database = Database;
 Database.setup = function()
 {
 	var _this = this,
-		ObjectId = _this.mongoose.Schema.ObjectId,
 		databaseUrl = _this.config.url,
 		database = _this.config.database,
 		collection = _this.config.collection || 'buffers',
@@ -116,29 +116,8 @@ Database.setup = function()
 			},
 			function (callback)
 			{
-				var PartitionModel = new _this.mongoose.Schema({
-					account: String,
-					network: ObjectId,
-					timestamp: Number,
-					read: Boolean,
-					nick: String,
-					target: String,
-					self: Boolean,
-					status: Boolean,
-					privmsg: Boolean,
-					json: {}
-				});
-
-				var MetaDataModel = new _this.mongoose.Schema({
-					account: String,
-					network: ObjectId,
-					target: String,
-					date: String,
-					timestamp: Number,
-					baseLocation: String,
-					location: String,
-					s3hash: String
-				});
+				var PartitionModel = new _this.mongoose.Schema(_this.settings.partitionObject);
+				var MetaDataModel = new _this.mongoose.Schema(_this.settings.metaDataObject);
 
 				_this.partitionData = _this.conn.model(collection, PartitionModel, collection);
 				_this.metaData = _this.conn.model(metaCollection, MetaDataModel, metaCollection);

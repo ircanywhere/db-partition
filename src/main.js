@@ -16,7 +16,8 @@
 
 const async = require('async'),
 	  pjson = require('../package.json'),
-	  config = require('../config.json'),
+	  settings = require('../settings.js').settings,
+	  config = require('../settings.js').config,
 	  clc = require('cli-color'),
 	  database = require('./database').database,
 	  dump = require('./dump').dump,
