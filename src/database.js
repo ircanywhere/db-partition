@@ -21,6 +21,7 @@ const async = require('async'),
 	  clc = require('cli-color'),
 	  util = require('util'),
 	  error = function(text) { util.log(clc.red(text)); process.exit(1) },
+	  error_noshut = function(text) { util.log(clc.red(text)) },
 	  warn = function(text) { util.log(clc.yellow(text)) };
 	  success = function(text) { util.log(clc.green(text)) },
 	  notice = function(text) { util.log(clc.cyanBright(text)) };
@@ -35,6 +36,8 @@ var Database = {
 	mongoose: require('mongoose'),
 	e: new EventEmitter()
 };
+
+exports.database = Database;
 
 /*
  * Database::setup
@@ -130,13 +133,15 @@ Database.setup = function()
 					account: String,
 					network: ObjectId,
 					target: String,
+					date: String,
 					timestamp: Number,
 					baseLocation: String,
-					location: String
+					location: String,
+					s3hash: String
 				});
 
-				_this.partitionData = _this.conn.model(collection, PartitionModel);
-				_this.metaData = _this.conn.model(metaCollection, MetaDataModel);
+				_this.partitionData = _this.conn.model(collection, PartitionModel, collection);
+				_this.metaData = _this.conn.model(metaCollection, MetaDataModel, metaCollection);
 				// setup the schema
 
 				notice('Partition collection:   setting up schema');
@@ -168,7 +173,7 @@ Database.analyse = function()
 	// _this so we don't have to bind
 	// days defaults to 28 (4 week) if undefined
 
-	var from = moment().subtract('days', days).startOf('day');
+	var from = moment.utc().subtract('days', days).startOf('day');
 	// thank fuck for moment, probably cut 10 lines down to one piss easy call
 
 	_this.partitionQuery = {timestamp: {'$lt': Date.parse(from._d)	}};
@@ -222,15 +227,13 @@ Database.partition = function()
 		function (callback)
 		{
 			var stream = _this.partitionData.find(_this.partitionQuery).sort({timestamp: 'asc'}).stream(),
-				tens = Math.round(_this.pcount / 10),
-				percent = 0,
-				c = 0,
-				i = 0;
+				tens = Math.floor(_this.pcount / 10),
+				percent = c = i = 0;
 			// setup a stream and make some calculations
 
 			stream.on('data', function(record)
 			{
-				if (c == tens)
+				if (c == tens && percent < 100)
 				{
 					c = 0;
 					percent += 10;
@@ -264,15 +267,22 @@ Database.partition = function()
 				// update counters
 			});
 
+			stream.on('error', function(err)
+			{
+				error(err);
+			});
+
 			stream.on('close', function()
 			{
-				callback(null);
+				callback(null, percent);
 				// do the writing outside of here
 			});
 		},
-		function (callback)
+		function (percent, callback)
 		{
-			notice(_this.partitionData.collection.name + ':   ... Organised ' + _this.pcount + ' documents (100%)');
+			if (percent != 100)
+				notice(_this.partitionData.collection.name + ':   ... Organised ' + _this.pcount + ' documents (100%)');
+			
 			success('Successfully completed organising');
 			// once we've got to here we're safe in saying our data has been analysed
 
@@ -283,4 +293,40 @@ Database.partition = function()
 	// series our thingies so we know what we're doing.
 };
 
-exports.database = Database;
+/*
+ * Database::finish
+ *
+ * Write the meta data and delete the old records
+ */
+Database.finish = function(callback)
+{
+	var _this = this;
+		_this.dump = require('./dump').dump;
+
+	notice('Attempting to write meta data to database...');
+	_this.metaData.collection.insert(_this.dump.metaData, {safe: true}, function(err, records)
+	{
+		if (err)
+		{
+			error_noshut('Failed to write meta data to database...');
+			_this.dump.dumpMetaData();
+		}
+		else
+		{
+			success('Successfully wrote meta data to database');
+			// meta data dumped, lets delete the old records
+		}
+
+		_this.partitionData.count(_this.dump.query, function(err, pcount)
+		{
+			//_this.partitionData.remove(_this.dump.query, function(err)
+			//{
+				success('Successfully removed old documents from the database, ' + pcount + ' documents removed');
+				callback();
+			//});
+			// delete the old records
+		});
+		// count the old records
+	});
+	// attempt to save data to database
+};

@@ -3,7 +3,7 @@
 	"database": "testbed",
 	"collection": "buffers",
 	"metaCollection": "buffersMeta",
-	"olderthan": 8,
+	"olderthan": 9,
 	"backupto": "fs",
 	"fs": {
 		"location": "/home/ricki/shared/db-partition/data"

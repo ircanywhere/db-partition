@@ -18,8 +18,10 @@ var EventEmitter = require('events').EventEmitter;
 
 const async = require('async'),
 	  clc = require('cli-color'),
+	  moment = require('moment'),
 	  util = require('util'),
 	  fs = require('fs'),
+	  crypto = require('crypto'),
 	  nodefs = require('node-fs'),
 	  error = function(text) { util.log(clc.red(text)); process.exit(1) },
 	  error_noshut = function(text) { util.log(clc.red(text)) },
@@ -37,6 +39,8 @@ var Dump = {
 	database: require('./database').database,
 	e: new EventEmitter()
 };
+
+exports.dump = Dump;
 
 /*
  * Dump::setup
@@ -128,9 +132,10 @@ Dump.setup = function()
 Dump.save = function(fileStructure)
 {
 	var _this = this,
-		wrote = 0,
-		paths = 0,
+		paths = wrote = 0,
 		files = {};
+		_this.metaData = [],
+		_this.query = {'$or': []};
 
 	async.series([
 		function (callback)
@@ -182,22 +187,23 @@ Dump.save = function(fileStructure)
 			_this.attemptWrite(files, 1, 5, function()
 			{
 				success('Successfully saved ' + Object.keys(files).length + ' file(s)');
-				callback();
+				// some notices
+
+				_this.database.finish(function() {
+					_this.e.emit('finished');
+				});
+				// attempt to write meta data
 			},
 			function(ret)
 			{
 				error_noshut('WARNING: Retry attempts failed, not saving ' + Object.keys(ret).length + ' file(s)');
 				for (var i in ret)
 					error_noshut('         ' + i.replace(_this.location, ''));
+				
 				warn('Will not remove these records from the database');
 
 				callback();
 			});
-		},
-		function (callback)
-		{
-			_this.e.emit('finished');
-			// once all this is done emit the complete callback so we can continue
 		}
 	]);
 };
@@ -217,17 +223,22 @@ Dump.attemptWrite = function(files, attempt, retry, complete, failure)
 {
 	var _this = this;
 	
-	_this.writeFileObject(files);
-	_this.e.on('write finished', function(ret)
+	_this.e.once('write finished', function(ret)
 	{
 		if (attempt > retry)
 		{
-			failure(files);
+			failure(ret);
 			return;
 		}
 		// failed to complete, send the files array to the function
 
-		if (ret !== true && Object.keys(ret).length > 0)
+		if (ret === true)
+		{
+			complete();
+			return;
+		}
+		// completed
+		else if (typeof ret === 'object' && Object.keys(ret).length > 0)
 		{
 			warn('WARNING: Failed to write ' + Object.keys(ret).length + ' file(s)');
 			for (var i in ret)
@@ -252,13 +263,9 @@ Dump.attemptWrite = function(files, attempt, retry, complete, failure)
 				}, 1000);
 		}
 		// output that x document couldnt be written
-		else if (ret === true)
-		{
-			complete();
-			return;
-		}
-		// completed bosh
 	});
+
+	_this.writeFileObject(files);
 };
 
 /*
@@ -271,38 +278,87 @@ Dump.attemptWrite = function(files, attempt, retry, complete, failure)
 Dump.writeFileObject = function(files)
 {
 	var _this = this,
-		start = done = [],
-		wrote = 0,
+		keys = start = Object.keys(files),
+		tens = Math.floor(keys.length / 10),
+		percent = c = i = docs = 0,
+		done = [],
 		returnObj = {};
-	
-	for (var file in files)
-	{
-		var obj = files[file];
-			dump = unescape(encodeURIComponent(JSON.stringify(obj)));
-			start.push(file);
 
-		fs.writeFile(file, dump, 0777, function(err)
+	async.forEachSeries(keys, function(item, callback)
+	{
+		docs += files[item].length;
+		var dump = unescape(encodeURIComponent(JSON.stringify(files[item]))),
+			location = item.replace(_this.location, ''),
+			data = location.split('/'),
+			s3hash = crypto.createHash('md5').update(location).digest('hex');
+		
+		fs.writeFile(item, dump, 0777, function(err)
 		{
 			if (!err)
-				done.push(file);
+			{
+				done.push(item);
 
-			wrote++;
-			
-			if (wrote >= start.length)
-				callback();
+				if (c == tens && percent < 100)
+				{
+					c = 0;
+					percent += 10;
+					notice(_this.database.partitionData.collection.name + ':   ... Partitioned ' + docs + ' documents into ' + i + ' file(s) (' + percent + '%)');
+				}
+				// are we on a percentage? notify the end user
+
+				_this.metaData.push({
+					account: data[1],
+					network: data[2],
+					target: data[3],
+					date: data[4],
+					timestamp: +new Date(),
+					baseLocation: _this.location,
+					location: location,
+					s3hash: s3hash
+				});
+				// input this into the meta data object
+
+				var startOfDay = moment.utc(data[4], 'DD-MM-YYYY').startOf('day'),
+					endOfDay = moment.utc(data[4], 'DD-MM-YYYY').endOf('day'),
+					queryObj = {
+						account: data[1],
+						network: data[2],
+						timestamp: {'$gt': Date.parse(startOfDay._d), '$lt': Date.parse(endOfDay._d)}
+					};
+				// construct a query object
+
+				if (data[3] == 'status')
+					queryObj.status = true;
+				else
+					queryObj.target = data[3];
+				// target or status????
+
+				_this.query['$or'].push(queryObj);
+				// push the object to our query
+			}
+
+			i++;
+			c++;
+			// up some variables
+
+			callback();
+			// next item
 		});
-	}
-	// attempted to dump all the files
-
-	function callback()
+		// attempted to dump all the files in order
+	},
+	function(err)
 	{
+		if (percent != 100)
+			notice(_this.database.partitionData.collection.name + ':   ... Partitioned ' + docs + ' documents into ' + keys.length + ' file(s) (100%)');
+		// we've finished, notice it
+
 		var check = '',
 			failed = false;
 
 		for (var i = 0; i < start.length; i++)
 		{
 			check = start[i];
-			if (!done.indexOf(check))
+			if (done.indexOf(check) == -1)
 			{
 				failed = true;
 				returnObj[check] = files[check];
@@ -312,11 +368,28 @@ Dump.writeFileObject = function(files)
 
 		var ret = (!failed) ? true : returnObj;
 
-		console.log(start, done, failed);
-
 		_this.e.emit('write finished', ret);
 		// finished attempting to write
-	}
+	})
 };
 
-exports.dump = Dump;
+/*
+ * Dump::dumpMetaData
+ *
+ * A function which dumps the meta data to disk if database dump fails
+ */
+Dump.dumpMetaData = function()
+{
+	var _this = this,
+		date = moment.utc().format('DD-MM-YYYY'),
+		file = _this.location + '/meta_data.' + date;
+
+	notice('Attempting to write meta data to disk...');
+	fs.writeFile(file, JSON.stringify(_this.metaData), 0777, function(err)
+	{
+		if (err)
+			error('Failed to dump meta data to disk, shutting down');
+		
+		success('Successfully dumped meta data to ' + file);
+	});
+};
